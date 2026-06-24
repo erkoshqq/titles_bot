@@ -6,8 +6,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
 )
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
+from aiohttp import web
 from dotenv import load_dotenv
 import sheets
 import youtube
@@ -204,31 +203,35 @@ async def show_item(update: Update, context: ContextTypes.DEFAULT_TYPE, category
     else:
         await update.effective_message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
 
-# --- Keep-alive для UptimeRobot ---
-class KeepAliveHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        pass
+# --- Keep-alive для UptimeRobot (async, через aiohttp) ---
+async def handle_ping(request):
+    return web.Response(text="OK")
 
-def run_keep_alive():
+async def run_keep_alive():
     port = int(os.getenv("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), KeepAliveHandler)
-    server.serve_forever()
+    app_web = web.Application()
+    app_web.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app_web)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Keep-alive сервер запущен на порту {port}")
 
 # --- Main ---
 async def main():
-    thread = threading.Thread(target=run_keep_alive, daemon=True)
-    thread.start()
-    logger.info("Keep-alive сервер запущен")
+    await run_keep_alive()
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_action))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    await app.run_polling()
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    # держим процесс живым
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
